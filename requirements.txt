@@ -1,5 +1,6 @@
-python-telegram-bot==20.0a6
-easyocr
+python-telegram-bot==20.7
 pillow
-flask
-pytz
+pytesseract
+python-dotenv
+google-generativeai
+asyncpg
