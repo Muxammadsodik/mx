@@ -1,17 +1,7 @@
 services:
   - type: web
     name: mx
-    runtime: python
-    buildCommand: |
-      apt-get update && apt-get install -y tesseract-ocr
-      pip install -r requirements.txt
-    startCommand: python main.py
-    envVars:
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: DATABASE_URL
-        sync: false
-      - key: ADMIN_IDS
-        sync: false
+    env: docker
+    plan: free
+    autoDeploy: true
+
