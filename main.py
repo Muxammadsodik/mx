@@ -24,18 +24,16 @@ load_dotenv()
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "5103279067").split(",")))
-DB_URL = os.getenv("DATABASE_URL") 
+DB_URL = os.getenv("DATABASE_URL")
 
 # === GLOBAL ===
 DB_POOL = None
 NAME, PHONE, REGION = range(3)
 TASK_SELECT, QUESTION, ANSWER, CONFIRM_Q, CONFIRM_A = range(3, 8)
-
 regions = ["Tashkent", "Andijan", "Fergana", "Namangan", "Samarkand", "Bukhara",
-    "Navoi", "Kashkadarya", "Surkhandarya", "Jizzakh", "Sirdarya", "Khorezm",
-    "Karakalpakstan", "Other"]
+           "Navoi", "Kashkadarya", "Surkhandarya", "Jizzakh", "Sirdarya", "Khorezm",
+           "Karakalpakstan", "Other"]
 region_keyboard = [[r] for r in regions]
-
 logging.basicConfig(level=logging.INFO)
 GEMINI_MODEL = genai.GenerativeModel("gemini-2.0-flash")
 
@@ -44,24 +42,19 @@ async def init_db():
     global DB_POOL
     DB_POOL = await asyncpg.create_pool(DB_URL)
     async with DB_POOL.acquire() as conn:
-        await conn.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                full_name TEXT,
-                phone_number TEXT,
-                region TEXT,
-                last_submission_date TEXT,
-                task1_submitted BOOLEAN DEFAULT FALSE,
-                task2_submitted BOOLEAN DEFAULT FALSE
-            )
-        ''')
+        await conn.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY,
+            full_name TEXT,
+            phone_number TEXT,
+            region TEXT,
+            last_submission_date TEXT,
+            task1_submitted BOOLEAN DEFAULT FALSE,
+            task2_submitted BOOLEAN DEFAULT FALSE
+        )''')
 
 async def create_user(user_id):
     async with DB_POOL.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO users (user_id) VALUES ($1)
-            ON CONFLICT (user_id) DO NOTHING
-        """, user_id)
+        await conn.execute("INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING", user_id)
 
 async def save_user_info(user_id, field, value):
     async with DB_POOL.acquire() as conn:
@@ -81,10 +74,7 @@ async def reset_limits_if_needed(user_id):
 
 async def get_user_status(user_id):
     async with DB_POOL.acquire() as conn:
-        row = await conn.fetchrow("""
-            SELECT last_submission_date, task1_submitted, task2_submitted FROM users WHERE user_id = $1
-        """, user_id)
-        return row
+        return await conn.fetchrow("SELECT last_submission_date, task1_submitted, task2_submitted FROM users WHERE user_id = $1", user_id)
 
 async def update_task_submission(user_id, task):
     col = "task1_submitted" if task == "Task 1" else "task2_submitted"
@@ -125,9 +115,9 @@ Score and comment each:
         except Exception as e:
             logging.warning(f"Gemini API attempt {attempt + 1} failed: {str(e)}")
             await asyncio.sleep(2)
-    return "❌ Gemini API error after retries. Please try again later."
+    return "\u274c Gemini API error after retries. Please try again later."
 
-# === Health Check Server ===
+# === Health Check ===
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -137,6 +127,16 @@ class HealthHandler(BaseHTTPRequestHandler):
 def run_health_server():
     server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+
+# === Global Error Handler ===
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.error("Exception occurred:", exc_info=context.error)
+    error_text = f"⚠️ *Bot Crash/Error Detected!*\n\n```{str(context.error)}```"
+    for admin_id in ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=admin_id, text=error_text[:4096], parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logging.warning(f"Couldn't notify admin {admin_id}: {e}")
 
 # === User Flow ===
 WELCOME = (
@@ -212,11 +212,9 @@ async def get_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = await asyncio.to_thread(extract_text_from_image, path)
     else:
         text = update.message.text.strip()
-
     if not text:
         await update.message.reply_text("❌ Could not read the answer. Please try again.")
         return ANSWER
-
     context.user_data["answer"] = text
     await update.message.reply_text(f"✏️ Is this your answer?\n\n{text}", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("Yes", callback_data="confirm_a_yes"), InlineKeyboardButton("No", callback_data="confirm_a_no")]
@@ -228,11 +226,9 @@ async def confirm_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     answer = context.user_data.get("answer")
     question = context.user_data.get("question")
-
     if query.data == "confirm_a_no":
         await query.edit_message_text(f"❌ Please resend your answer or correct it manually:\n\n`{escape_markdown(answer, version=2)}`", parse_mode=ParseMode.MARKDOWN_V2)
         return ANSWER
-
     await query.edit_message_text("⏳ Evaluating your writing...")
     task = context.user_data.get("task", "Unknown")
     result = await evaluate_with_gemini(task, question or "", answer or "")
@@ -244,11 +240,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-# === Main Entrypoint ===
+# === Entrypoint ===
 def main():
     run_health_server()
-    app = ApplicationBuilder().token(TOKEN).post_init(init_db).build()
-
+    app = ApplicationBuilder().token(TOKEN).post_init(lambda app: init_db()).build()
     reg = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
@@ -258,7 +253,6 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
-
     task = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^(Task 1|Task 2)$"), choose_task)],
         states={
@@ -268,10 +262,10 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel)]
     )
-
     app.add_handler(reg)
     app.add_handler(task)
     app.add_handler(CommandHandler("cancel", cancel))
+    app.add_error_handler(error_handler)
     app.run_polling()
 
 if __name__ == "__main__":
